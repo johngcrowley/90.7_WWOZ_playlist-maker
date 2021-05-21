@@ -10,7 +10,7 @@ import datetime as dt
 import json
 import requests
 
-
+# -------------------- DataBase Class --------------------
 class spotifyDB():
     def __init__(self):
         self.conn = sqlite3.connect('wwoz.db')
@@ -105,7 +105,7 @@ def scrape_top_100():
     return cols
 
 #Clean Scraped data in Pandas DataFrame
-def df_prep():
+def df_prep(cols):
     artists = [col.text for col in cols if col.attrs['data-bind'] == 'artist']
     albums = [col.text for col in cols if col.attrs['data-bind'] == 'album']
     songs = [col.text for col in cols if col.attrs['data-bind'] == 'title']
@@ -123,7 +123,7 @@ def df_prep():
     return track_n_artist,df
 
 #Call Spotify API
-def api(series):
+def api(series,df):
     correct = []
     for i,s in enumerate(series):
         queryParams = f'?q={s}&type=track'
@@ -132,7 +132,11 @@ def api(series):
         for y in res['tracks']['items']:
             if y['artists'][0]['name'].lower()[:5] in df['Artist'].iloc[i].lower():
                 if y['name'].lower()[:4] == df['Title'].iloc[i][:4].lower():
-                    correct.append((i,y['name'],y['artists'][0]['name'],y['id']))
+                    track = y['name']
+                    artist = y['artists'][0]['name']
+                    song_id = y['id']
+                    print(f'{track} by {artist} = success!')
+                    correct.append((i,track,artist,song_id))
     return correct
 
 # Filter song_id // URI Output into a new DataFrame          
@@ -171,24 +175,24 @@ def create_playlist():
     return r.json()['id']
 
 # Ensure songs aren't already in a playlist somewhere // check against SQLite DataBase
-def check_redundancies():
+def check_redundancies(df2):
     uris = [x[0] for x in db.GetUris()]
     new = df2['uri'].tolist()
     good_to_go = [uri for uri in new if uri not in uris]
     return good_to_go
 
 # API Call to Add songs // Add the newly-added URI's to our SQLite DataBase
-def add_tracks_to_spotify(spotify_playlist_id):
-    uri_list = list(map(lambda uri: 'spotify:track:'+ uri, check_redundancies()))
+def add_tracks_to_spotify(spotify_playlist_id,df2):
+    uri_list = list(map(lambda uri: 'spotify:track:'+ uri, check_redundancies(df2)))
     reqbody = json.dumps({'uris': uri_list })
-    r = requests.post(f'https://api.spotify.com/v1/users/{user_id}/playlists/{spotify_playlst_id}/tracks', 
+    r = requests.post(f'https://api.spotify.com/v1/users/{user_id}/playlists/{spotify_playlist_id}/tracks', 
             data=reqbody,headers=headers)
     if r.status_code in [200, 201]:
         print('WOOOO!!!')
     try:
         # use check_redundancies() to mask df2 (our matched tracks w/ URIs) for SQL Insert
         playlist_id = db.GetPlaylistid()
-        df3 = df2.loc[df2['uri'].isin(check_redundancies())] 
+        df3 = df2.loc[df2['uri'].isin(check_redundancies(df2))] 
         df3.apply(lambda x: db.InsertTrack(x['artist'],x['track'],x['uri'],playlist_id),axis=1)
     except:
         print('no luck adding these new tracks to database')
@@ -196,23 +200,28 @@ def add_tracks_to_spotify(spotify_playlist_id):
 def run_that_shit():
     #1.) ---- scrape top 100
     cols = scrape_top_100()
+    #Scrape success!
 
     #2.) ---- prep df into query params
     track_n_artist = df_prep(cols)[0]
     df = df_prep(cols)[1]
+    #Turning table into query parameters for Spotify API...
 
     #3.) ---- call_api // store uri's in df
-    df2 = uri_matches(api(track_n_artist))
+    df2 = uri_matches(api(track_n_artist,df))
+    #Return Output of non-matched
+    measure(df,df2)
 
     #4.) ---- make playlist // add tracks
-    if len(check_redundancies()) != 0:
-        add_tracks_to_spotify(create_playlist())
+    if len(check_redundancies(df2)) != 0:
+        print('No redundancies, adding tracks now...')
+        spotify_playlist_id = create_playlist()
+        add_tracks_to_spotify(spotify_playlist_id,df2)
     else:
         print('Nothing new to add')
 
     #5.) ---- output missing entries / counts
     print('Success! Check Spotify for your new Playlist')
-    return measure(df,df2)
 
 # -------------------------- SCRIPT -------------------------
 
